@@ -1,0 +1,146 @@
+---
+- hosts: gluster_data
+  vars:
+    bricks_dir: /srv/gluster/bricks
+    device_groups:
+      - name: devgroup0
+        devices: 
+          - sdaa
+          - sdag
+          - sdam
+          - sdas
+          - sdc
+          - sdi
+          - sdo
+          - sdu
+      - name: devgroup1
+        devices: 
+          - sdab
+          - sdah
+          - sdan
+          - sdat
+          - sdd
+          - sdj
+          - sdp
+          - sdv
+      - name: devgroup2
+        devices: 
+          - sdac
+          - sdai
+          - sdao
+          - sdau
+          - sde
+          - sdk
+          - sdq
+          - sdw
+      - name: devgroup3
+        devices: 
+          - sdad
+          - sdaj
+          - sdap
+          - sdav
+          - sdf
+          - sdl
+          - sdr
+          - sdx
+      - name: devgroup4
+        devices: 
+          - sdae
+          - sdak
+          - sdaq
+          - sdaw
+          - sdg
+          - sdm
+          - sds
+          - sdy
+      - name: devgroup5
+        devices: 
+          - sdaf
+          - sdal
+          - sdar
+          - sdb
+          - sdh
+          - sdn
+          - sdt
+          - sdz
+
+  tasks:
+    - name: Check if `python-apt` package is installed
+      action: shell apt-get install -y python-apt
+      tags:
+        - apt
+
+    - name: fix for uzh ubuntu distribution not present
+      apt_repository: repo="deb http://www.gc3.uzh.ch/packages/uzhonly/ubuntu trusty main" state=absent
+      tags: 
+        - apt
+
+    - name: Ensure extra reposistories are present (Ubuntu)
+      action: apt_repository repo="deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} universe multiverse" state=present
+      tags:
+        - apt
+
+    - name: install base packages
+      apt: name={{ item }} state=installed update_cache=yes
+      with_items:
+        - sysvinit-utils
+        - software-properties-common
+        - python-software-properties
+        - python-pycurl
+        - aptitude
+      tags:
+        - apt
+
+    - name: configure ppa to get the latest version of gluster
+      apt_repository: repo=ppa:semiosis/ubuntu-glusterfs-3.5
+      tags:
+        - apt
+        - gluster
+
+    - name: Install base gluster packages
+      apt: name={{ item }} state=installed
+      with_items:
+        - glusterfs-server
+        - xfsprogs
+      tags:
+        - gluster
+
+    # Configure devices
+    # vg_options must be specified for some version of ansible, cfr https://github.com/ansible/ansible/pull/6859
+    - name: Create LVM Volume Groups using listed devices
+      lvg: vg={{ item.name }} pvs=/dev/{{ item.devices | join(",/dev/") }} vg_options=""
+      with_items: device_groups
+      tags:
+        - bricks
+
+    - name: Create LVM Logical Volumes
+      lvol: vg={{ item.name }} lv=brick size=100%FREE
+      with_items: device_groups
+      tags:
+        - bricks
+
+    - name: Format bricks
+      filesystem: fstype=xfs dev=/dev/{{ item.name }}/brick opts="-i size=512"
+      with_items: device_groups
+      tags:
+        - bricks
+
+    - name: ensure mountpoint is present
+      file: path=/srv/gluster/bricks/{{ item.name }} state=directory
+      with_items: device_groups
+      tags:
+        - bricks
+
+    - name: mount bricks
+      mount: name=/srv/gluster/bricks/{{ item.name }} src=/dev/{{ item.name }}/brick fstype=xfs state=mounted
+      with_items: device_groups
+      tags:
+        - bricks
+
+    # Gluster peering
+    - name: Configure peers (Only on the first host)
+      action: shell gluster peer probe {{ item }}
+      with_items: groups.gluster_data
+      when: inventory_hostname == groups.gluster_data[0]
+      tags:
+        - gluster

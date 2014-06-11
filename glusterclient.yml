@@ -1,0 +1,139 @@
+---
+- hosts: cloud_nodes
+  tasks:
+    - name: Check if `python-apt` package is installed
+      action: shell apt-get install -y {{ item }}
+      with_items:
+        - python-apt
+        - python-pycurl
+      tags:
+        - apt
+
+    - name: fix for uzh ubuntu distribution not present
+      apt_repository: repo="deb http://www.gc3.uzh.ch/packages/uzhonly/ubuntu trusty main" state=absent
+      tags: 
+        - apt
+
+    - name: Ensure extra reposistories are present (Ubuntu)
+      action: apt_repository repo="deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} universe multiverse" state=present
+      tags:
+        - apt
+
+    - name: configure ppa to get the latest version of gluster
+      apt_repository: repo=ppa:semiosis/ubuntu-glusterfs-3.5
+      tags:
+        - gluster
+        - apt
+
+    - name: install base packages
+      apt: name={{ item }} state=installed update_cache=yes
+      with_items:
+        - sysvinit-utils
+        - software-properties-common
+        - python-software-properties
+        - python-pycurl
+        - aptitude
+        - glusterfs-client
+      tags:
+        - apt
+  
+    - name: Ensure cfengine is NOT running
+      service: name=cfengine3 state=stopped
+
+- hosts: cloud_controller
+  vars:
+    gluster_volumes:
+      - storage1:/cinder
+      - storage2:/cinder
+      - storage3:/cinder
+      - storage4:/cinder
+    cinder_variables:
+      volume_driver: cinder.volume.drivers.glusterfs.GlusterfsDriver
+      glusterfs_shares_config: /etc/cinder/shares.conf
+      glusterfs_mount_point_base: /var/lib/cinder/volumes
+
+  tasks:
+    - name: Update cinder.conf
+      ini_file: dest=/etc/cinder/cinder.conf
+                section=DEFAULT
+                option={{ item.key }}
+                value={{ item.value }}
+      with_dict: cinder_variables
+      notify: restart cinder
+
+    - name: create /etc/cinder/shares.conf file
+      lineinfile:
+        dest={{ cinder_variables['glusterfs_shares_config'] }}
+        line={{ item }}
+        create=yes
+      with_items: gluster_volumes
+      notify: restart cinder
+
+    - name: ensure qemu-img and libgfapi are installed. 
+      # Also, we need a kernel at least 3.3 because of
+      # http://lists.openstack.org/pipermail/openstack-operators/2013-May/002980.html
+      # sysfstools is used instead for `systool`, an error we got while trying to attach a cinder volume:
+      # systool is not installed
+      apt: name={{ item }} state=installed
+      with_items:
+        - qemu-utils
+        - glusterfs-client
+        - sysfsutils
+
+  handlers:
+    - name: restart cinder
+      service: name=cinder-volume state=restarted
+  
+
+- hosts: cloud_compute
+  # Basically two changes:
+  # 1) use a fuse FS for /var/lib/nova/instances, for VM starting from glance images
+  # 2) use libgfapi for Cinder volumes (VM starting from volume or
+  #    volumes attached to the VM after creation)
+  vars:
+    gluster_volume: nova-instances
+    nova_variables:
+      qemu_allowed_storage_drivers: gluster
+      remove_unused_resized_minimum_age_seconds: 360000
+      image_cache_manager_interval: 300
+      remove_unused_base_images: false
+      remove_unused_original_minimum_age_seconds: 8640000
+      remove_unused_resized_minimum_age_seconds: 360000
+
+  tasks:
+    - name: mount /var/lib/nova/instances from gluster
+      mount: name=/var/lib/nova/instances
+             src={{ groups.gluster_data[0] }}:/{{ gluster_volume }} 
+             fstype=glusterfs 
+             opts=backupvolfile-server={{ groups.gluster_data[1] }} 
+             state=mounted
+      notify: restart nova-compute
+
+    - name: update nova-compute.conf
+      ini_file: dest=/etc/nova/nova-compute.conf
+                section=DEFAULT
+                option={{ item.key }} value={{ item.value }} 
+                backup=yes 
+      with_dict: nova_variables
+
+    - name: configure ppa to get a version of qemu with gluster support
+      apt_repository: repo=ppa:semiosis/ubuntu-qemu-glusterfs
+      tags:
+        - gluster
+        - apt
+
+    - name: Force downgrade of qemu, in order to have qemu with gluster support
+      apt: name={{ item }}=2.0.0~rc1+dfsg-0ubuntu3.1semiosis state=installed force=yes
+      with_items:
+        - qemu-keymaps
+        - qemu-kvm
+        - qemu-system-common
+        - qemu-system-x86
+        - qemu-utils
+      tags:
+        - gluster
+        - apt
+
+  handlers:
+    - name: restart nova-compute
+      service: name=nova-compute state=restarted
