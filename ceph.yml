@@ -1,0 +1,194 @@
+---
+- hosts: ceph_mon:ceph_ods
+  vars:
+    # Generated with uuidgen
+    fsid: 7705608d-cbef-477a-865d-f5ae4c03370a
+    # Should be OSDs * 100 / replicas, rounded-up to the nearest power of 2.
+    # In our case: 4*48*100/2 = 9600
+    pg_num: 16384
+    pgp_num: 16384
+    replicas: 2
+    bricks_dir: /srv/gluster/bricks
+    device_groups:
+      - name: devgroup0
+        devices: 
+          - sdaa
+          - sdag
+          - sdam
+          - sdas
+          - sdc
+          - sdi
+          - sdo
+          - sdu
+      - name: devgroup1
+        devices: 
+          - sdab
+          - sdah
+          - sdan
+          - sdat
+          - sdd
+          - sdj
+          - sdp
+          - sdv
+      - name: devgroup2
+        devices: 
+          - sdac
+          - sdai
+          - sdao
+          - sdau
+          - sde
+          - sdk
+          - sdq
+          - sdw
+      - name: devgroup3
+        devices: 
+          - sdad
+          - sdaj
+          - sdap
+          - sdav
+          - sdf
+          - sdl
+          - sdr
+          - sdx
+      - name: devgroup4
+        devices: 
+          - sdae
+          - sdak
+          - sdaq
+          - sdaw
+          - sdg
+          - sdm
+          - sds
+          - sdy
+      - name: devgroup5
+        devices: 
+          - sdaf
+          - sdal
+          - sdar
+          - sdb
+          - sdh
+          - sdn
+          - sdt
+          - sdz
+    devices:
+      - sdaa
+      - sdag
+      - sdam
+      - sdas
+      - sdc
+      - sdi
+      - sdo
+      - sdu
+      - sdab
+      - sdah
+      - sdan
+      - sdat
+      - sdd
+      - sdj
+      - sdp
+      - sdv
+      - sdac
+      - sdai
+      - sdao
+      - sdau
+      - sde
+      - sdk
+      - sdq
+      - sdw
+      - sdad
+      - sdaj
+      - sdap
+      - sdav
+      - sdf
+      - sdl
+      - sdr
+      - sdx
+      - sdae
+      - sdak
+      - sdaq
+      - sdaw
+      - sdg
+      - sdm
+      - sds
+      - sdy
+      - sdaf
+      - sdal
+      - sdar
+      - sdb
+      - sdh
+      - sdn
+      - sdt
+      - sdz
+
+  tasks:
+    # Configure basic packages
+    - name: Check if `python-apt` package is installed
+      action: shell apt-get install -y python-apt
+      tags:
+        - apt
+
+    - name: fix for uzh ubuntu distribution not present
+      apt_repository: repo="deb http://www.gc3.uzh.ch/packages/uzhonly/ubuntu trusty main" state=absent
+      tags: 
+        - apt
+
+    - name: Ensure extra reposistories are present (Ubuntu)
+      action: apt_repository repo="deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} universe multiverse" state=present
+      tags:
+        - apt
+
+    - name: install base packages
+      apt: name={{ item }} state=installed update_cache=yes
+      with_items:
+        - sysvinit-utils
+        - software-properties-common
+        - python-software-properties
+        - python-pycurl
+        - aptitude
+      tags:
+        - apt
+    
+    # Install packages needed by ceph
+    - name: configure apt key for CEPH repository
+      action: apt_key url=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc state=present
+      tags:
+        - apt
+
+    - name: add CEPH apt public repository
+      action: apt_repository repo='deb http://ceph.com/debian/ trusty main' state=present
+      tags:
+        - apt
+
+    - name: Install required package for apt_repository.
+      action: apt pkg={{ item }} state=present
+      with_items:
+        - ceph
+        - xfsprogs
+        - linux-image-extra-{{ ansible_kernel }}
+      tags:
+        - apt
+
+
+    - action: file dest=/etc/ceph state=directory
+      tags:
+        - ceph
+
+    - action: file dest=/var/run/ceph state=directory
+      tags:
+        - ceph
+
+    # - action: file dest=/var/lib/ceph/mon/ceph-{{ ansible_hostname }} state=directory
+    #   tags:
+    #     - ceph
+
+    # - action: file dest=/var/lib/ceph/osd/ceph-{{ ansible_hostname }} state=directory
+    #   tags:
+    #     - ceph
+
+    - name: configure ceph
+      action: template src=ceph/templates/etc/ceph/ceph.conf.j2 dest=/etc/ceph/ceph.conf
+      tags:
+        - ceph
+
+
+
