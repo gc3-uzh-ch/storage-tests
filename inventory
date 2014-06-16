@@ -14,18 +14,38 @@ storage2
 storage3
 storage4
 
-# [ceph]
-# storage5
-# storage6
-# storage7
-# storage8
+[ceph_mon]
+storage5
+storage6
+storage7
+storage8
 
-[cloud_nodes]
+[ceph_osd]
+storage5
+storage6
+storage7
+storage8
+
+[gluster_cloud_nodes]
 cloud2 ansible_ssh_host=192.168.160.11 ansible_ssh_user=root
-node-08-01-06 ansible_ssh_host=192.168.160.157 ansible_ssh_user=root
+node-09-01-00 ansible_ssh_host=192.168.160.197 ansible_ssh_user=root
+node-09-01-01 ansible_ssh_host=192.168.160.198 ansible_ssh_user=root
 
-[cloud_controller]
+[ceph_cloud_nodes]
+cloud3 ansible_ssh_host=192.168.160.161 ansible_ssh_user=root
+node-09-01-03 ansible_ssh_host=192.168.160.200 ansible_ssh_user=root
+node-09-01-04 ansible_ssh_host=192.168.160.201 ansible_ssh_user=root
+
+[gluster_cloud_controller]
 cloud2
 
-[cloud_compute]
-node-08-01-06
+[ceph_cloud_controller]
+cloud3
+
+[gluster_cloud_compute]
+node-09-01-00
+node-09-01-01
+
+[ceph_cloud_compute]
+node-09-01-03
+node-09-01-04

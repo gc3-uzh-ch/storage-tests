@@ -63,6 +63,16 @@
           - sdn
           - sdt
           - sdz
+    gluster_volumes:
+      - name: vol1
+        stripe: 1
+        replica: 2
+      - name: vol2
+        stripe: 1
+        replica: 2
+      - name: vol3
+        stripe: 1
+        replica: 2
 
   tasks:
     - name: Check if `python-apt` package is installed
@@ -126,13 +136,13 @@
         - bricks
 
     - name: ensure mountpoint is present
-      file: path=/srv/gluster/bricks/{{ item.name }} state=directory
+      file: path={{ bricks_dir }}/{{ item.name }} state=directory
       with_items: device_groups
       tags:
         - bricks
 
     - name: mount bricks
-      mount: name=/srv/gluster/bricks/{{ item.name }} src=/dev/{{ item.name }}/brick fstype=xfs state=mounted
+      mount: name={{ bricks_dir }}/{{ item.name }} src=/dev/{{ item.name }}/brick fstype=xfs state=mounted
       with_items: device_groups
       tags:
         - bricks

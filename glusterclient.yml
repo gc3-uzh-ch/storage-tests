@@ -1,5 +1,9 @@
 ---
-- hosts: cloud_nodes
+
+# Note for Antonio: after installation of openstack, run:
+# nova-manage network create private --fixed_range_v4 10.9.0.0/24  --dns1 130.60.128.3 --dns2 130.60.64.51
+
+- hosts: gluster_cloud_nodes
   tasks:
     - name: Check if `python-apt` package is installed
       action: shell apt-get install -y {{ item }}
@@ -40,7 +44,7 @@
     - name: Ensure cfengine is NOT running
       service: name=cfengine3 state=stopped
 
-- hosts: cloud_controller
+- hosts: gluster_cloud_controller
   vars:
     gluster_volumes:
       - storage1:/cinder
@@ -85,7 +89,7 @@
       service: name=cinder-volume state=restarted
   
 
-- hosts: cloud_compute
+- hosts: gluster_cloud_compute
   # Basically two changes:
   # 1) use a fuse FS for /var/lib/nova/instances, for VM starting from glance images
   # 2) use libgfapi for Cinder volumes (VM starting from volume or
@@ -105,7 +109,7 @@
       mount: name=/var/lib/nova/instances
              src={{ groups.gluster_data[0] }}:/{{ gluster_volume }} 
              fstype=glusterfs 
-             opts=backupvolfile-server={{ groups.gluster_data[1] }} 
+             opts=backupvolfile-server={{ groups.gluster_data[1] }},_netdev
              state=mounted
       notify: restart nova-compute
 
