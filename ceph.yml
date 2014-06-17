@@ -72,53 +72,53 @@
           - sdz
     devices:
       - sdaa
-      - sdag
-      - sdam
-      - sdas
-      - sdc
-      - sdi
-      - sdo
-      - sdu
       - sdab
-      - sdah
-      - sdan
-      - sdat
-      - sdd
-      - sdj
-      - sdp
-      - sdv
       - sdac
-      - sdai
-      - sdao
-      - sdau
-      - sde
-      - sdk
-      - sdq
-      - sdw
       - sdad
-      - sdaj
-      - sdap
-      - sdav
-      - sdf
-      - sdl
-      - sdr
-      - sdx
       - sdae
-      - sdak
-      - sdaq
-      - sdaw
-      - sdg
-      - sdm
-      - sds
-      - sdy
       - sdaf
+      - sdag
+      - sdah
+      - sdai
+      - sdaj
+      - sdak
       - sdal
+      - sdam
+      - sdan
+      - sdao
+      - sdap
+      - sdaq
       - sdar
-      - sdb
-      - sdh
-      - sdn
-      - sdt
-      - sdz
+      - sdas
+      - sdat
+      - sdau
+      - sdav
+      - sdaw
+      # - sdb
+      # - sdc
+      # - sdd
+      # - sde
+      # - sdf
+      # - sdg
+      # - sdh
+      # - sdi
+      # - sdj
+      # - sdk
+      # - sdl
+      # - sdm
+      # - sdn
+      # - sdo
+      # - sdp
+      # - sdq
+      # - sdr
+      # - sds
+      # - sdt
+      # - sdu
+      # - sdv
+      # - sdw
+      # - sdx
+      # - sdy
+      # - sdz
 
   tasks:
     # Configure basic packages
@@ -133,7 +133,7 @@
         - apt
 
     - name: Ensure extra reposistories are present (Ubuntu)
-      action: apt_repository repo="deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} universe multiverse" state=present
+      apt_repository: repo="deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} universe multiverse" state=present
       tags:
         - apt
 
@@ -150,17 +150,17 @@
     
     # Install packages needed by ceph
     - name: configure apt key for CEPH repository
-      action: apt_key url=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc state=present
+      apt_key: url=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc state=present
       tags:
         - apt
 
     - name: add CEPH apt public repository
-      action: apt_repository repo='deb http://ceph.com/debian/ trusty main' state=present
+      apt_repository: repo='deb http://ceph.com/debian/ trusty main' state=present
       tags:
         - apt
 
     - name: Install required package for apt_repository.
-      action: apt pkg={{ item }} state=present
+      apt: pkg={{ item }} state=present
       with_items:
         - ceph
         - xfsprogs
@@ -169,26 +169,112 @@
         - apt
 
 
-    - action: file dest=/etc/ceph state=directory
+    - file: dest=/etc/ceph state=directory
       tags:
         - ceph
 
-    - action: file dest=/var/run/ceph state=directory
+    - file: dest=/var/run/ceph state=directory
       tags:
         - ceph
 
-    # - action: file dest=/var/lib/ceph/mon/ceph-{{ ansible_hostname }} state=directory
-    #   tags:
-    #     - ceph
+    - file: dest=/var/lib/ceph/mon/ceph-{{ ansible_hostname }} state=directory
+      tags:
+        - ceph
+
+
+    - mount: name=/var/lib/ceph/mon/ceph-{{ ansible_hostname }} src=/dev/sdb1 fstype=xfs state=mounted
+      tags:
+        - ceph
 
     # - action: file dest=/var/lib/ceph/osd/ceph-{{ ansible_hostname }} state=directory
     #   tags:
     #     - ceph
 
     - name: configure ceph
-      action: template src=ceph/templates/etc/ceph/ceph.conf.j2 dest=/etc/ceph/ceph.conf
+      template: src=ceph/templates/etc/ceph/ceph.conf.j2 dest=/etc/ceph/ceph.conf
       tags:
         - ceph
+        - conf
 
 
+- hosts: ceph_cloud_controller
+  tasks:
+    # Install packages needed by ceph
+    - name: configure apt key for CEPH repository
+      apt_key: url=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc state=present
+      tags:
+        - apt
 
+    - name: fix for uzh ubuntu distribution not present
+      apt_repository: repo="deb http://www.gc3.uzh.ch/packages/uzhonly/ubuntu trusty main" state=absent
+      tags: 
+        - apt
+
+    - name: add CEPH apt public repository
+      apt_repository: repo='deb http://ceph.com/debian/ trusty main' state=present
+      tags:
+        - apt
+
+    - name: Install required package for apt_repository.
+      apt: pkg={{ item }} state=present
+      with_items:
+        - python-ceph
+        - ceph
+      tags:
+        - apt
+
+    - name: Ensure cfengine is NOT running
+      service: name=cfengine3 state=stopped
+
+    - name: Configure glance
+      ini_file: dest=/etc/glance/glance-api.conf
+                section=DEFAULT
+                option={{ item.name }}
+                value={{ item.value }}
+      with_items:
+        - name: default_store
+          value: rbd
+        - name: rbd_store_user
+          value: glance
+        - name: rbd_store_pool
+          value: glance
+        - name: show_image_direct_url
+          value: True
+      notify: restart glance
+
+    - name: ensure ceph keyring is owned by glance
+      file: path=/etc/glance/glance-api.conf owner=glance group=glance
+
+  handlers:
+    - name: restart glance
+      service: name=glance-api state=restarted
+
+- hosts: ceph_cloud_compute
+  tasks:
+    # Install packages needed by ceph
+    - name: configure apt key for CEPH repository
+      apt_key: url=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc state=present
+      tags:
+        - apt
+
+    - name: fix for uzh ubuntu distribution not present
+      apt_repository: repo="deb http://www.gc3.uzh.ch/packages/uzhonly/ubuntu trusty main" state=absent
+      tags: 
+        - apt
+
+    - name: add CEPH apt public repository
+      apt_repository: repo='deb http://ceph.com/debian/ trusty main' state=present
+      tags:
+        - apt
+
+    - name: Install required package for apt_repository.
+      apt: pkg={{ item }} state=present
+      with_items:
+        - python-ceph
+        - ceph
+      tags:
+        - apt
+
+    - name: Ensure cfengine is NOT running
+      service: name=cfengine3 state=stopped
+  

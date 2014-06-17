@@ -36,7 +36,7 @@ Create the mon map::
 
 Copy the important files on all the other servers::
 
-    root@storage5:~# for i in storage{6..8}; do scp /tmp/monmap $i:/tmp; scp /etc/ceph/ceph.clienet.keyring $i:/etc/ceph;done
+    root@storage5:~# for i in storage{6..8}; do scp /tmp/monmap $i:/tmp; scp /tmp/ceph.mon.keyring $i:/tmp; scp /etc/ceph/ceph.client.admin.keyring $i:/etc/ceph;done
 
 Start the monitor::
 
@@ -82,12 +82,33 @@ Create OSDs (`--zap-disk` is needed because I used the device for
 testing before)::
 
 
-    for dev in /dev/sda[a-z] /dev/sd[b-z]; do ceph-disk prepare --zap-disk --cluster ceph --cluster-uuid 7705608d-cbef-477a-865d-f5ae4c03370a --fs-type xfs $dev; done
+    for host in storage{5..8}; do \
+        for dev in /dev/sda[a-z]; do \
+            ssh $host grep ^$dev /proc/mount || ssh $host ceph-disk prepare --zap-disk \
+            --cluster ceph \
+            --cluster-uuid 7705608d-cbef-477a-865d-f5ae4c03370a \
+            --fs-type xfs $dev; done; done
 
 
 Note: the bootstrap key is used by ceph-disk activate. ceph auth list
 will show you the current bootstrap key, and the same key must be in
-/var/lib/ceph/bootstrap-osd/keyring.
+/var/lib/ceph/bootstrap-osd/ceph.keyring. If you have problems, you can get
+the key for bootstrap-osd, or if it deosn't exist::
+
+    root@storage5:~# ceph auth get-or-create-key client.bootstrap-osd mon "allow profile bootstrap-osd"
+    AQDLHJ9TwAeFCBAAgnT30pTxpK+lhx/orwidjA==
+
+Copy the key in /var/lib/ceph/bootstrap-osd/ceph.keyring::
+
+    root@storage5:~# ceph-authtool /var/lib/ceph/bootstrap-osd/ceph.keyring -C --name=client.bootstrap-osd -a AQDLHJ9TwAeFCBAAgnT30pTxpK+lhx/orwidjA==
+
+Copy it on all the other clients::
+
+    root@storage5:~# for host in storage{6..8}; do scp /var/lib/ceph/bootstrap-osd/ceph.keyring $host:/var/lib/ceph/bootstrap-osd/; done
+    ceph.keyring                                                                                                                                                                      100%   71     0.1KB/s   00:00    
+    ceph.keyring                                                                                                                                                                      100%   71     0.1KB/s   00:00    
+    ceph.keyring                                                                                                                                                                      100%   71     0.1KB/s   00:00    
+
 
 
 Note: osd indexing is not following the configuration file, but the
@@ -105,7 +126,8 @@ After a while, you will see::
                      384 active+clean
 
 
-Increase the pg and pgp number::
+Increase the pg and pgp number, if you want. Please note ethat this
+will take a lot of time::
 
     ceph osd pool set rbd pg_num $[4*1024]
 
@@ -192,7 +214,148 @@ Trying to reboot a node::
                       77 active+remapped
                     2020 active+degraded
 
+Problem: /var/log too short in the sdcard, we probably need to use one
+of the disks for /var/log and /var/lib/ceph/mon/ceph-*
+
+Probably, too many OSDs on the same machine, which only has 8 cores
+and 32GB of ram!
+
+Placement
+---------
+
+Create two racks::
+
+    ceph osd crush add-bucket rack-es-4 rack
+    ceph osd crush add-bucket rack-es-5 rack
+
+Move storage nodes to the correct rack::
+
+    ceph osd crush move storage5 rack=rack-es-4
+    ceph osd crush move storage6 rack=rack-es-4
+    ceph osd crush move storage7 rack=rack-es-4
+    ceph osd crush move storage8 rack=rack-es-4
+
+Then, move the racks under the root::
+
+    root@storage5:~# ceph osd crush move rack-es-4 root=default
+    moved item id -6 name 'rack-es-4' to location {root=default} in crush map
+    root@storage5:~# ceph osd crush move rack-es-5 root=default
+    moved item id -7 name 'rack-es-5' to location {root=default} in crush map
+
+Note that this will cause a rebalancing of the cluster.
+
 
 Clients
 -------
 
+First of all, let's create pools for various services::
+
+    ceph osd pool create cinder 8192
+    ceph osd pool create glance 8192
+    ceph osd pool create instances 8192
+
+Note: creating all these pgs basically put down the cluster, which was
+unresponsive for a lot of time (1-2h). Also, /var/log was filled, and
+this was one more reason why the cluster was unresponsive.
+
+Create accounts::
+
+    ceph auth get-or-create client.cinder mon 'allow r' osd 'allow class-read object_prefix rbd_children, allow rwx pool=cinder, allow rx pool=glance'
+    ceph auth get-or-create client.glance mon 'allow r' osd 'allow class-read object_prefix rbd_children, allow rwx pool=glance'
+
+Copy the keyring on the remote machine::
+
+    root@storage5:~# ceph auth get-or-create client.glance | ssh cloud3 sudo tee /etc/ceph/ceph.client.glance.keyring
+    [client.glance]
+    	key = AQDBUZ9TUD2BChAAc0PsLKQ9GWsoBiKBCglc9Q==
+    root@storage5:~# ceph auth get-or-create client.cinder | ssh cloud3 sudo tee /etc/ceph/ceph.client.cinder.keyring
+    [client.cinder]
+    	key = AQC6UZ9TCBioMhAAFBvv0WiYy80EJyuRumOwng==
+
+Ensure glance and cinder can access the files::
+
+    root@storage5:~# ssh cloud3 chown glance.glance /etc/ceph/ceph.client.glance.keyring
+    root@storage5:~# ssh cloud3 chown cinder.cinder /etc/ceph/ceph.client.cinder.keyring
+
+Ensure ceph.conf is copied to all the nodes (actually, only the mon
+part is interesting)::
+
+    root@storage5:~# scp /etc/ceph/ceph.conf cloud3:/etc/ceph
+
+At this point, after updating glance configuration file you should be
+able to upload an image to glance, and this is seen (as a list of
+chunk) on ceph using the `rados` command::
+
+    rados -p glance ls
+
+However, with rbd you can actually see the image::
+
+    root@storage5:~# rbd  ls glance
+    f90a196e-82a4-4a9f-a990-867274da34a0
+
+The same from the controller, but with id `glance`::
+
+    root@cloud3:~# rbd --id glance ls glance
+    f90a196e-82a4-4a9f-a990-867274da34a0
+
+and get more detailed information on the image file::
+
+    root@cloud3:~# rbd --id glance -p glance  info f90a196e-82a4-4a9f-a990-867274da34a0
+    rbd image 'f90a196e-82a4-4a9f-a990-867274da34a0':
+    	size 1287 MB in 161 objects
+    	order 23 (8192 kB objects)
+    	block_name_prefix: rbd_data.1a7c727761da
+    	format: 2
+    	features: layering
+
+
+http://ceph.com/docs/master/install/manual-deployment/
+http://ceph.com/docs/master/rados/configuration/pool-pg-config-ref/
+http://ceph.com/docs/next/rbd/rbd-openstack/
+http://ceph.com/docs/master/rados/troubleshooting/troubleshooting-pg/
+http://ceph.com/docs/master/start/hardware-recommendations/
+
+to boot nova images directly from ceph:
+https://blueprints.launchpad.net/nova/+spec/rbd-clone-image-handler
+
+HA and ceph:
+http://behindtheracks.com/tag/icehouse/
+
+erasure (cold storage, uses less space but it's slower, sort of raid5)
+http://ceph.com/docs/firefly/dev/erasure-coded-pool/
+
+on different types of osd
+http://ceph.com/docs/master/rados/operations/crush-map/
+
+http://www.sebastien-han.fr/blog/2014/01/13/ceph-managing-crush-with-the-cli/
+
+
+
+Problem:
+
+Uploading an image using glance, interrupting the upload. In glance,
+there is no image, however, in rados I see::
+
+    root@storage5:~# rbd ls -p glance
+    71b6f92a-6512-4919-b12d-d65b6dd9a2ab
+    861bd4c7-0965-4133-a094-5d0fb3ec2cb7
+    f90a196e-82a4-4a9f-a990-867274da34a0
+
+I *know* for a fact that images `a47bf8bb-25ad-4f3c-88ab-e43962a1b140`
+and `71b6f92a-6512-4919-b12d-d65b6dd9a2ab` are invalid, but how can I
+tell otherwise::
+
+    root@storage5:~# rbd info -p glance f90a196e-82a4-4a9f-a990-867274da34a0
+    rbd image 'f90a196e-82a4-4a9f-a990-867274da34a0':
+    	size 1287 MB in 161 objects
+    	order 23 (8192 kB objects)
+    	block_name_prefix: rbd_data.1a7c727761da
+    	format: 2
+    	features: layering
+    root@storage5:~# rbd info -p glance a47bf8bb-25ad-4f3c-88ab-e43962a1b140
+    rbd image 'a47bf8bb-25ad-4f3c-88ab-e43962a1b140':
+    	size 1287 MB in 161 objects
+    	order 23 (8192 kB objects)
+    	block_name_prefix: rbd_data.1d0c302cc484
+    	format: 2
+    	features: layering

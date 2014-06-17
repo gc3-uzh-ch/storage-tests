@@ -14,6 +14,8 @@
 
     # debug ms = 1
 
+    # Note: these values are apparenlty not read when creating a new
+    # pool, nor when creating the default pools (data, metadata, rbd)
     osd pool default pg num = {{ pg_num }}
     osd pool default pgp num = {{ pgp_num }}
     osd pool default size = {{ replicas }}
