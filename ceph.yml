@@ -8,68 +8,7 @@
     pg_num: 16384
     pgp_num: 16384
     replicas: 2
-    bricks_dir: /srv/gluster/bricks
-    device_groups:
-      - name: devgroup0
-        devices: 
-          - sdaa
-          - sdag
-          - sdam
-          - sdas
-          - sdc
-          - sdi
-          - sdo
-          - sdu
-      - name: devgroup1
-        devices: 
-          - sdab
-          - sdah
-          - sdan
-          - sdat
-          - sdd
-          - sdj
-          - sdp
-          - sdv
-      - name: devgroup2
-        devices: 
-          - sdac
-          - sdai
-          - sdao
-          - sdau
-          - sde
-          - sdk
-          - sdq
-          - sdw
-      - name: devgroup3
-        devices: 
-          - sdad
-          - sdaj
-          - sdap
-          - sdav
-          - sdf
-          - sdl
-          - sdr
-          - sdx
-      - name: devgroup4
-        devices: 
-          - sdae
-          - sdak
-          - sdaq
-          - sdaw
-          - sdg
-          - sdm
-          - sds
-          - sdy
-      - name: devgroup5
-        devices: 
-          - sdaf
-          - sdal
-          - sdar
-          - sdb
-          - sdh
-          - sdn
-          - sdt
-          - sdz
+    libvirt_uuid: 1bdc5dc9-c116-43fa-8be5-17d1c870761d
     devices:
       - sdaa
       - sdab
@@ -191,13 +130,55 @@
     #     - ceph
 
     - name: configure ceph
-      template: src=ceph/templates/etc/ceph/ceph.conf.j2 dest=/etc/ceph/ceph.conf
+      local_action: template src=ceph/templates/etc/ceph/ceph.conf.j2 dest=/tmp/ceph.conf
       tags:
         - ceph
         - conf
 
+    - name: Copy the configuration file on all the machines
+      copy: src=/tmp/ceph.conf dest=/etc/ceph/ceph.conf
+      tags:
+        - ceph
+        - conf
+
+    - name: save glance key
+      shell: ceph auth get-or-create client.glance
+      register: glance_key
+      when: "ansible_hostname == groups['ceph_mon'][0]"
+      tags:
+        - conf
+        - test
+
+    - name: save cinder key
+      shell: ceph auth get-or-create client.cinder
+      register: cinder_key
+      when: "ansible_hostname == groups['ceph_mon'][0]"
+      tags:
+        - conf
+        - test
+
+    - name: save cinder key
+      shell: ceph auth get-key client.cinder
+      register: cinder_bare_key
+      when: "ansible_hostname == groups['ceph_mon'][0]"
+      tags:
+        - conf
+        - test
+
+    - name: set facts to store glance and cinder keys
+      when: "ansible_hostname == groups['ceph_mon'][0]"
+      set_fact: 
+        cinder_key: "{{ cinder_key.stdout }}"
+        cinder_bare_key: "{{ cinder_bare_key.stdout }}"
+        glance_key: "{{ glance_key.stdout }}"
+      tags:
+        - conf
+        - test
 
 - hosts: ceph_cloud_controller
+  vars:
+    libvirt_uuid: 1bdc5dc9-c116-43fa-8be5-17d1c870761d
+
   tasks:
     # Install packages needed by ceph
     - name: configure apt key for CEPH repository
@@ -220,8 +201,11 @@
       with_items:
         - python-ceph
         - ceph
+        - qemu-utils
       tags:
         - apt
+    # qemu-utils is needed in case we need to create a volume starting
+    # from a qcow2 image, since it has to be converted to raw
 
     - name: Ensure cfengine is NOT running
       service: name=cfengine3 state=stopped
@@ -242,14 +226,63 @@
           value: True
       notify: restart glance
 
+    - name: Configure cinder
+      ini_file: dest=/etc/cinder/cinder.conf
+                section=DEFAULT
+                option={{ item.name }}
+                value={{ item.value }}
+      with_items:
+        - name: volume_driver
+          value: cinder.volume.drivers.rbd.RBDDriver
+        - name: rbd_pool
+          value: cinder
+        - name: rbd_ceph_conf
+          value: /etc/ceph/ceph.conf
+        - name: rbd_flatten_volume_from_snapshot
+          value: false
+        # - name: rbd_max_clone_depth
+        #   value: 5g
+        - name: lance_api_version
+          value: 2
+        - name: rbd_user
+          value: cinder
+        - name: rbd_secret_uuid
+          value: "{{ libvirt_uuid }}"
+      notify: restart cinder
+
     - name: ensure ceph keyring is owned by glance
       file: path=/etc/glance/glance-api.conf owner=glance group=glance
+
+    - name: Copy the configuration file on all the machines
+      copy: src=/tmp/ceph.conf dest=/etc/ceph/ceph.conf
+      tags:
+        - ceph
+        - conf
+
+    - name: Create glance keyring
+      copy: dest=/etc/ceph/ceph.client.glance.keyring content="{{ hostvars[groups['ceph_mon'][0]]['glance_key'] }}\n"
+      tags:
+        - conf
+        - test
+
+    - name: Create cinder keyring
+      copy: dest=/etc/ceph/ceph.client.cinder.keyring content="{{ hostvars[groups['ceph_mon'][0]]['cinder_key'] }}\n"
+      tags:
+        - conf
+        - test
 
   handlers:
     - name: restart glance
       service: name=glance-api state=restarted
 
+    - name: restart cinder
+      service: name=cinder-volume state=restarted
+
+
 - hosts: ceph_cloud_compute
+  vars:
+    libvirt_uuid: 1bdc5dc9-c116-43fa-8be5-17d1c870761d
+
   tasks:
     # Install packages needed by ceph
     - name: configure apt key for CEPH repository
@@ -278,3 +311,62 @@
     - name: Ensure cfengine is NOT running
       service: name=cfengine3 state=stopped
   
+    - name: Copy the configuration file on all the machines
+      copy: src=/tmp/ceph.conf dest=/etc/ceph/ceph.conf
+      tags:
+        - ceph
+        - conf
+
+    - name: Add secret for libvirt
+      template: src=templates/cinder-secret.xml.j2 dest=/etc/libvirt/qemu/cinder-secret.xml owner=root group=root mode=0400
+      notify: update libvirt secret
+      tags:
+        - conf
+        - test
+
+
+    - name: Configure nova-compute
+      ini_file: dest=/etc/nova/nova.conf
+                section=DEFAULT
+                option={{ item.name }}
+                value={{ item.value }}
+      with_items:
+        - name: libvirt_images_type
+          value: rbd
+        - name: libvirt_images_rbd_pool
+          value: cinder
+        - name: libvirt_images_rbd_ceph_conf
+          value: /etc/ceph/ceph.conf
+        - name: rbd_user
+          value: cinder
+        - name: rbd_secret_uuid
+          value: "{{ libvirt_uuid }}"
+        - name: libvirt_inject_password
+          value: false
+        - name: libvirt_inject_key
+          value: false
+        - name: libvirt_inject_partition
+          value: -2
+      notify: restart nova-compute
+
+
+    - name: Download patch for live migration
+      get_url: url=https://launchpadlibrarian.net/173194970/ensure_added_feature_is_unique.patch
+               dest=/root/ensure_added_feature_is_unique.patch
+      tags:
+        - nova
+      
+    - name: Apply patch for live migration
+      shell: patch --dry-run -p 1 < /root/ensure_added_feature_is_unique.patch && patch -p 1 < /root/ensure_added_feature_is_unique.patch
+             chdir=/usr/lib/python2.7/dist-packages
+      ignore_errors: true
+      notify: restart nova-compute
+      tags:
+        - nova
+
+  handlers:
+    - name: update libvirt secret
+      shell: virsh secret-define /etc/libvirt/qemu/cinder-secret.xml && virsh secret-set-value --secret {{ libvirt_uuid }} --base64 "{{ hostvars[groups['ceph_mon'][0]]['cinder_bare_key'] }}"
+
+    - name: restart nova-compute
+      service: name=nova-compute state=restarted

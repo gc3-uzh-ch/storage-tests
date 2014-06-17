@@ -359,3 +359,239 @@ tell otherwise::
     	block_name_prefix: rbd_data.1d0c302cc484
     	format: 2
     	features: layering
+
+
+Test:
+
+4 VM started from volume (or volume snapshots).
+iozone running on all instances
+shutdown one node
+
+::
+    (ansible)antonio@kenny:~/github/storage-test(master*)$ pdsh -w storage[6-8] free -m|dshbak -c
+    ----------------
+    storage6
+    ----------------
+                 total       used       free     shared    buffers     cached
+    Mem:         32240      32015        224          0         45      23712
+    -/+ buffers/cache:       8258      23982
+    Swap:         4983          0       4983
+    ----------------
+    storage7
+    ----------------
+                 total       used       free     shared    buffers     cached
+    Mem:         32240      32053        186          0         44      23927
+    -/+ buffers/cache:       8082      24158
+    Swap:         4983          0       4983
+    ----------------
+    storage8
+    ----------------
+                 total       used       free     shared    buffers     cached
+    Mem:         32240      32032        208          0         42      23703
+    -/+ buffers/cache:       8285      23954
+    Swap:         4983          0       4983
+    (ansible)antonio@kenny:~/github/storage-test(master*)$ pdsh -w storage[6-8] uptime|sort
+    storage6:  14:17:17 up 20:05,  1 user,  load average: 4.88, 5.57, 5.00
+    storage7:  14:17:18 up 20:04,  0 users,  load average: 5.68, 7.86, 6.96
+    storage8:  14:17:17 up 20:04,  0 users,  load average: 7.20, 6.86, 6.44
+
+ceph -w on storage6::
+
+    2014-06-17 14:18:11.079939 mon.1 [INF] pgmap v7633: 24896 pgs: 12446 active+degraded, 12450 active+clean; 49368 MB data, 104 GB used, 85462 GB / 85567 GB avail; 28154 kB/s rd, 121 MB/s wr, 528 op/s; 5816/23664 objects degraded (24.577%)
+    [...]
+    (ansible)antonio@kenny:~/github/storage-test(master*)$ pdsh -w storage[6-8] uptime|sort
+    storage6:  14:21:10 up 20:09,  1 user,  load average: 28.80, 11.77, 7.26
+    storage7:  14:21:10 up 20:08,  0 users,  load average: 31.76, 12.46, 8.51
+    storage8:  14:21:11 up 20:08,  0 users,  load average: 43.04, 15.51, 9.40
+
+ceph -s::
+
+    root@storage6:~# ceph -s
+    2014-06-17 14:21:42.349319 7f6ddc185700  0 -- :/1003732 >> 192.168.160.65:6789/0 pipe(0x7f6dd80371f0 sd=3 :0 s=1 pgs=0 cs=0 l=1 c=0x7f6dd8037460).fault
+        cluster 7705608d-cbef-477a-865d-f5ae4c03370a
+         health HEALTH_WARN 10 pgs peering; 86 pgs recovering; 17 pgs recovery_wait; 115 pgs stuck inactive; 2786 pgs stuck unclean; 28 requests are blocked > 32 sec; recovery 12678/24188 objects degraded (52.414%); 1 mons down, quorum 1,2,3 storage6,storage7,storage8
+         monmap e4: 4 mons at {storage5=192.168.160.65:6789/0,storage6=192.168.160.66:6789/0,storage7=192.168.160.67:6789/0,storage8=192.168.160.68:6789/0}, election epoch 16, quorum 1,2,3 storage6,storage7,storage8
+         osdmap e568: 92 osds: 69 up, 69 in
+          pgmap v7750: 24896 pgs, 6 pools, 50416 MB data, 12094 objects
+                86832 MB used, 64090 GB / 64175 GB avail
+                12678/24188 objects degraded (52.414%)
+                     136 inactive
+                    2537 active
+                      10 peering
+                      17 active+recovery_wait
+                   22110 active+clean
+                      86 active+recovering
+    recovery io 247 MB/s, 0 keys/s, 59 objects/s
+      client io 569 MB/s rd, 2469 MB/s wr, 9479 op/s
+
+
+Restarting storage5::
+
+    root@storage6:~# ceph -s
+        cluster 7705608d-cbef-477a-865d-f5ae4c03370a
+         health HEALTH_WARN 110 pgs recovering; 614 pgs recovery_wait; 571 pgs stuck unclean; 5 requests are blocked > 32 sec; recovery 3417/25862 objects degraded (13.212%)
+         monmap e4: 4 mons at {storage5=192.168.160.65:6789/0,storage6=192.168.160.66:6789/0,storage7=192.168.160.67:6789/0,storage8=192.168.160.68:6789/0}, election epoch 18, quorum 0,1,2,3 storage5,storage6,storage7,storage8
+         osdmap e580: 92 osds: 92 up, 92 in
+          pgmap v8213: 24896 pgs, 6 pools, 53764 MB data, 12931 objects
+                127 GB used, 85440 GB / 85567 GB avail
+                3417/25862 objects degraded (13.212%)
+                      38 active
+                     614 active+recovery_wait
+                   24134 active+clean
+                     110 active+recovering
+    recovery io 160 MB/s, 38 objects/s
+      client io 1557 kB/s rd, 14667 kB/s wr, 199 op/s
+
+
+load::
+
+    (ansible)antonio@kenny:~/github/storage-test(master*)$ pdsh -w storage[6-8] uptime|sort
+    storage6:  14:31:32 up 20:19,  2 users,  load average: 17.16, 12.30, 8.85
+    storage7:  14:31:32 up 20:18,  0 users,  load average: 15.30, 11.69, 9.45
+    storage8:  14:31:32 up 20:18,  0 users,  load average: 11.93, 12.60, 10.85
+
+
+Boot from image: need to copy the /etc/ceph/ceph.client.cinder.keyring
+on the compute node, because of a missing feature. Also, in this case,
+nova-compute will download from glance, and then use rbd to import the
+image to ceph.
+
+Volume creation: check
+
+Volume snapshot: check
+
+Boot from volume: check
+
+Boot from volume snapshot (creates new volume): check
+
+Boot from image (create a new volume): almost working: the image went
+into timeout because volume creation took too much, I used 20GB disk
+
+
+Live migration: need very simple patch for nova:
+https://bugs.launchpad.net/nova/+bug/1303536 patch is
+https://launchpadlibrarian.net/173194970/ensure_added_feature_is_unique.patch
+
+
+
+Boot from snapshot
+-------------------
+
+Create a volume snapshot::
+
+    root@cloud3:~# cinder list
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+-------------+
+    |                  ID                  |   Status  |         Display Name         | Size | Volume Type | Bootable | Attached to |
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+-------------+
+    | fd0dffdc-4cd3-4432-b57d-d44bc590d124 | available | Ubuntu 14.04 x86_64 from rbd |  20  |     None    |   true   |             |
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+-------------+
+    root@cloud3:~# cinder snapshot-create --display-name ubuntu_14.04 fd0dffdc-4cd3-4432-b57d-d44bc590d124
+    +---------------------+--------------------------------------+
+    |       Property      |                Value                 |
+    +---------------------+--------------------------------------+
+    |      created_at     |      2014-06-17T14:51:03.988370      |
+    | display_description |                 None                 |
+    |     display_name    |             ubuntu_14.04             |
+    |          id         | ea6d42de-3a67-4a51-a03a-b7fe528f484a |
+    |       metadata      |                  {}                  |
+    |         size        |                  20                  |
+    |        status       |               creating               |
+    |      volume_id      | fd0dffdc-4cd3-4432-b57d-d44bc590d124 |
+    +---------------------+--------------------------------------+
+    root@cloud3:~# cinder snapshot-list
+    +--------------------------------------+--------------------------------------+-----------+--------------+------+
+    |                  ID                  |              Volume ID               |   Status  | Display Name | Size |
+    +--------------------------------------+--------------------------------------+-----------+--------------+------+
+    | ea6d42de-3a67-4a51-a03a-b7fe528f484a | fd0dffdc-4cd3-4432-b57d-d44bc590d124 | available | ubuntu_14.04 |  20  |
+    +--------------------------------------+--------------------------------------+-----------+--------------+------+
+
+Boot from this snapshot::
+
+    root@cloud3:~# nova boot --flavor m1.small --key-name antonio --snapshot ea6d42de-3a67-4a51-a03a-b7fe528f484a test
+    +--------------------------------------+-------------------------------------------------+
+    | Property                             | Value                                           |
+    +--------------------------------------+-------------------------------------------------+
+    | OS-DCF:diskConfig                    | MANUAL                                          |
+    | OS-EXT-AZ:availability_zone          | nova                                            |
+    | OS-EXT-SRV-ATTR:host                 | -                                               |
+    | OS-EXT-SRV-ATTR:hypervisor_hostname  | -                                               |
+    | OS-EXT-SRV-ATTR:instance_name        | instance-0000001b                               |
+    | OS-EXT-STS:power_state               | 0                                               |
+    | OS-EXT-STS:task_state                | scheduling                                      |
+    | OS-EXT-STS:vm_state                  | building                                        |
+    | OS-SRV-USG:launched_at               | -                                               |
+    | OS-SRV-USG:terminated_at             | -                                               |
+    | accessIPv4                           |                                                 |
+    | accessIPv6                           |                                                 |
+    | adminPass                            | fidnq25XYQkD                                    |
+    | config_drive                         |                                                 |
+    | created                              | 2014-06-17T14:51:48Z                            |
+    | flavor                               | m1.small (2)                                    |
+    | hostId                               |                                                 |
+    | id                                   | 103d201c-db05-4d9e-aee4-5d9b27cbef1d            |
+    | image                                | Attempt to boot from volume - no image supplied |
+    | key_name                             | antonio                                         |
+    | metadata                             | {}                                              |
+    | name                                 | test                                            |
+    | os-extended-volumes:volumes_attached | []                                              |
+    | progress                             | 0                                               |
+    | security_groups                      | default                                         |
+    | status                               | BUILD                                           |
+    | tenant_id                            | a040593d8bd44e8982c46f96d5d5d04e                |
+    | updated                              | 2014-06-17T14:51:49Z                            |
+    | user_id                              | 3ab7addf37e14fe6bbe23f17a7a3b3b4                |
+    +--------------------------------------+-------------------------------------------------+
+    root@cloud3:~# nova list
+    +--------------------------------------+-----------------+--------+----------------------+-------------+------------------+
+    | ID                                   | Name            | Status | Task State           | Power State | Networks         |
+    +--------------------------------------+-----------------+--------+----------------------+-------------+------------------+
+    | 103d201c-db05-4d9e-aee4-5d9b27cbef1d | test            | BUILD  | block_device_mapping | NOSTATE     | private=10.8.0.2 |
+    | fc17ef33-5be7-42b3-a3c9-76135d54f243 | test from image | ACTIVE | deleting             | Running     | private=10.8.0.4 |
+    +--------------------------------------+-----------------+--------+----------------------+-------------+------------------+
+    root@cloud3:~# nova list
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+    | ID                                   | Name            | Status | Task State | Power State | Networks         |
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+    | 103d201c-db05-4d9e-aee4-5d9b27cbef1d | test            | ACTIVE | -          | Running     | private=10.8.0.2 |
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+
+A new volume is created for the machine::
+
+    root@cloud3:~# cinder list
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+--------------------------------------+
+    |                  ID                  |   Status  |         Display Name         | Size | Volume Type | Bootable |             Attached to              |
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+--------------------------------------+
+    | 1fafcf0b-be35-46b0-9df1-5109882cbec2 |   in-use  |                              |  20  |     None    |   true   | 103d201c-db05-4d9e-aee4-5d9b27cbef1d |
+    | fd0dffdc-4cd3-4432-b57d-d44bc590d124 | available | Ubuntu 14.04 x86_64 from rbd |  20  |     None    |   true   |                                      |
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+--------------------------------------+
+
+
+Boot from volume snapshot, but deleting the volume after vm
+termination::
+
+    root@cloud3:~# nova boot --block-device shutdown=remove,source=snapshot,id=ea6d42de-3a67-4a51-a03a-b7fe528f484a,dest=volume,bootindex=0 --flavor m1.small --key-name antonio   test 
+    root@cloud3:~# nova list
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+    | ID                                   | Name            | Status | Task State | Power State | Networks         |
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+    | 09295b96-5c64-491d-aa71-5507c5d07d53 | test            | ACTIVE | -          | Running     | private=10.8.0.2 |
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+    root@cloud3:~# cinder list
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+--------------------------------------+
+    |                  ID                  |   Status  |         Display Name         | Size | Volume Type | Bootable |             Attached to              |
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+--------------------------------------+
+    | 4665c620-18ba-443b-82e6-aba98d326879 |   in-use  |                              |  20  |     None    |   true   | 09295b96-5c64-491d-aa71-5507c5d07d53 |
+    | fd0dffdc-4cd3-4432-b57d-d44bc590d124 | available | Ubuntu 14.04 x86_64 from rbd |  20  |     None    |   true   |                                      |
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+--------------------------------------+
+    root@cloud3:~# nova delete test
+    root@cloud3:~# nova list
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+    | ID                                   | Name            | Status | Task State | Power State | Networks         |
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+    +--------------------------------------+-----------------+--------+------------+-------------+------------------+
+    root@cloud3:~# cinder list
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+-------------+
+    |                  ID                  |   Status  |         Display Name         | Size | Volume Type | Bootable | Attached to |
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+-------------+
+    | fd0dffdc-4cd3-4432-b57d-d44bc590d124 | available | Ubuntu 14.04 x86_64 from rbd |  20  |     None    |   true   |             |
+    +--------------------------------------+-----------+------------------------------+------+-------------+----------+-------------+
