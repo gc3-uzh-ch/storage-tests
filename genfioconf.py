@@ -23,7 +23,10 @@
 __docformat__ = 'reStructuredText'
 __author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
 
-import ConfigParser
+try:
+    import ConfigParser
+except ImportError:
+    import configparser as ConfigParser
 import argparse
 import os
 import re
@@ -32,11 +35,14 @@ import sys
 import tempfile
 
 ALL_TESTS = ['write', 'read', 'randwrite', 'randread']
-UZH_VALUES = {
+DEFAULT_BLOCKSIZES = ['4k', '8k', '16k', '32k', '64k', '1m']
+DEFAULT_SIZES = ['1g', '10g', '100g']
+
+UZH_EXPECTED_PERF = {
  
     'OSD Very High Capacity': {
         'write': {
-            'minsize': 1*2**30,
+            'minsize': 10*2**30,
             'mindisks': 16,
             'minbw': 1.5 * 2**30,
         },
@@ -44,7 +50,7 @@ UZH_VALUES = {
 
     'OSD High Capacity': {
         'write': {
-            'minsize': 1*2**30,
+            'minsize': 10*2**30,
             'mindisks': 16,
             'minbw': 1.5 * 2**30,
         },
@@ -52,7 +58,7 @@ UZH_VALUES = {
 
     'OSD High Performance (SATA/SAS)': {
         'write': {
-            'minsize': 1*2**30,
+            'minsize': 10*2**30,
             'mindisks': 16,
             'minbw': 2 * 2**30,
         },
@@ -125,7 +131,7 @@ def create_config_file(conf, size, bs, rw, direct):
 
 def run_test(fname):
     print("Running command: 'fio %s'" % fname)
-    pipe = subprocess.Popen(['fio', fname], stdout=subprocess.PIPE)
+    pipe = subprocess.Popen(['fio', fname], stdout=subprocess.PIPE, universal_newlines=True)
     stdout, stderr = pipe.communicate()
     with open(fname + '.out', 'w') as fd:
         fd.write(stdout)        
@@ -145,7 +151,7 @@ def human_to_bytes(s):
              'tb': 2**40,
              'pb' : 2**50,}
     # Also include one-letter units
-    for key, value in units.items():
+    for key, value in units.copy().items():
         units[key[0]] = value
 
     s = s.lower()
@@ -153,7 +159,7 @@ def human_to_bytes(s):
     
     try:
         return float(m.group('val')) * units.get(m.group('unit'), 1)
-    except Exception, ex:
+    except Exception as ex:
         import pdb; pdb.set_trace()
 
 
@@ -259,9 +265,9 @@ def parse_results(results, cfg):
     avgbw = totbw / numdisksbw
 
     if numdisks != numdisksbw and cfg.verbose:
-        print "WARNING: Device count mismatch: %d (iops) != %d (bw)" % (numdisks, numdisksbw)
+        print("WARNING: Device count mismatch: %d (iops) != %d (bw)" % (numdisks, numdisksbw))
 
-    if cfg.print_summary:
+    if cfg.verbose:
         msg.append("%s: avg iops=%d, bw: %d B/s" % (rw, avgiops, avgbw))
         msg.append("%s: min iops=%d, bw: %d B/s" % (rw,
                                                       min(data['disks_iops']),
@@ -272,7 +278,7 @@ def parse_results(results, cfg):
 
     sizeb = human_to_bytes(size)
     bsb = human_to_bytes(bs)
-    for osd, tests in UZH_VALUES.items():
+    for osd, tests in UZH_EXPECTED_PERF.items():
         if rw in tests:
             values = tests[rw]
             compliant = True
@@ -283,10 +289,10 @@ def parse_results(results, cfg):
             if 'bs' in values and bsb < values['bs']:
                 continue
 
-            if 'numrun' not in UZH_VALUES[osd][rw]:
-                UZH_VALUES[osd][rw]['numrun'] = 1
+            if 'numrun' not in UZH_EXPECTED_PERF[osd][rw]:
+                UZH_EXPECTED_PERF[osd][rw]['numrun'] = 1
             else:
-                UZH_VALUES[osd][rw]['numrun'] += 1
+                UZH_EXPECTED_PERF[osd][rw]['numrun'] += 1
             # Test is to be used to check compliance with RFP
             if data['aggr']['bw'] < values.get('minbw', 0):
                 msg.append("%s: NOT COMPLIANT: %d B/s < %d B/s" % (
@@ -314,12 +320,12 @@ if __name__ == "__main__":
     run_parser = subparser.add_parser('run', help='Run FIO')
     run_parser.add_argument('-b', help='blocksize',
                             nargs='*',
-                            default=['4k', '8k', '16k', '32k', '64k', '1m'],
+                            default=DEFAULT_BLOCKSIZES,
                             dest='bs')
 
     run_parser.add_argument('-s', help='size',
                             nargs='*',
-                            default=['1g', '10g', '100g'],
+                            default=DEFAULT_SIZES,
                             dest='size')
 
     run_parser.add_argument('-t', help='tests to run',
@@ -338,9 +344,9 @@ if __name__ == "__main__":
 
     run_parser.add_argument('-l', help='also generate statistic files',
                             default=False, action='store_true', dest='stats')
+    run_parser.add_argument('-v', dest='verbose', action='count')
 
     print_parser = subparser.add_parser('print', help='Parse data from output files')
-    print_parser.add_argument('-s', dest='print_summary', action='store_true')
     print_parser.add_argument('-v', dest='verbose', action='count')
     print_parser.add_argument('FILE', nargs='*', 
                               default=[fname for fname in os.listdir('.') if fname.endswith('.out')], 
@@ -354,18 +360,21 @@ if __name__ == "__main__":
                 for rw in cfg.tests:
                     conf_file = create_config_file(cfg, size, bs, rw, cfg.direct)
                     if not cfg.run_tests: 
-                        print "Config file %s written" % conf_file
+                        print("Config file %s written" % conf_file)
                         continue
                     results = run_test(conf_file)
-                    print parse_results(results)
+                    out = parse_results(results, cfg)
+                    if out: print(out)
+
     elif cfg.cmd == 'print':
         for fname in cfg.FILE:
             if cfg.verbose:
-                print "Reading file %s" % fname
+                print("Reading file %s" % fname)
             with open(fname) as fd:
                 out = parse_results(fd.read(), cfg)
-                if out: print out
-        for osd, tests in UZH_VALUES.items():
-            for rw in tests:
-                if 'numrun' not in tests[rw]:
-                    print "%s: NOT COMPLIANT: test `%s` not performed." % (osd, rw)
+                if out: print(out)
+
+    for osd, tests in UZH_EXPECTED_PERF.items():
+        for rw in tests:
+            if 'numrun' not in tests[rw]:
+                print("%s: NOT COMPLIANT: test `%s` not performed." % (osd, rw))
