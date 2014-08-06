@@ -32,35 +32,55 @@ import sys
 import tempfile
 
 ALL_TESTS = ['write', 'read', 'randwrite', 'randread']
+UZH_VALUES = {
+ 
+    'OSD Very High Capacity': {
+        'write': {
+            'minsize': 1*2**30,
+            'mindisks': 16,
+            'minbw': 1.5 * 2**30,
+        },
+    },
 
-# List devices here
-# conf = {
-#     'directories': [
-#         '/dev/sdaa', '/dev/sdab', '/dev/sdac',
-#         '/dev/sdad', '/dev/sdae', '/dev/sdaf',
-#         '/dev/sdag', '/dev/sdah', '/dev/sdai',
-#         '/dev/sdaj', '/dev/sdak', '/dev/sdal',
-#         '/dev/sdam', '/dev/sdan', '/dev/sdao',
-#         '/dev/sdap', '/dev/sdaq', '/dev/sdar',
-#         '/dev/sdas', '/dev/sdat', '/dev/sdau',
-#         '/dev/sdav', '/dev/sdaw', '/dev/sdb',
-#         '/dev/sdc', '/dev/sdd', '/dev/sde',
-#         '/dev/sdf', '/dev/sdg', '/dev/sdh',
-#         '/dev/sdi', '/dev/sdj', '/dev/sdk',
-#         '/dev/sdl', '/dev/sdm', '/dev/sdn',
-#         '/dev/sdo', '/dev/sdp', '/dev/sdq',
-#         '/dev/sdr', '/dev/sds', '/dev/sdt',
-#         '/dev/sdu', '/dev/sdv', '/dev/sdw',
-#         '/dev/sdx', '/dev/sdy', '/dev/sdz',
-#     ],
-    
-#     'size_l': ['1g', '10g', '100g'],
-#     'bs_l': ['4k', '8k', '16k', '32k', '64k', '1m'],
-#     # 'bs_l': ['4k', '1m'],
-#     'direct': 1,
-#     'rw_l': ['write', 'read', 'randwrite', 'randread'],
-# }
+    'OSD High Capacity': {
+        'write': {
+            'minsize': 1*2**30,
+            'mindisks': 16,
+            'minbw': 1.5 * 2**30,
+        },
+    },
 
+    'OSD High Performance (SATA/SAS)': {
+        'write': {
+            'minsize': 1*2**30,
+            'mindisks': 16,
+            'minbw': 2 * 2**30,
+        },
+    },
+
+    'OSD High Performance (SSD)': {
+        'randwrite': {
+            'minsize': 1*2**30,
+            'mindisks': 16,
+            'minbw': 1 * 2**30,
+            'bs': 4*2**10,
+        },
+    },
+    'OSD Very High Performance': {
+        'write': {
+            'minsize': 1*2**30,
+            'mindisks': 16,
+            'minbw': 3 * 2**30,
+        },
+        'randwrite': {
+            'minsize': 1*2**30,
+            'mindisks': 16,
+            'minbw': 1 * 2**30,
+            'bs': 4*2**10,
+        },
+    },
+
+}
 
 def create_config_file(conf, size, bs, rw, direct):
     cfg = ['[global]']
@@ -101,6 +121,7 @@ def create_config_file(conf, size, bs, rw, direct):
 
     return cfgfile
 
+
 def run_test(fname):
     print("Running command: 'fio %s'" % fname)
     pipe = subprocess.Popen(['fio', fname], stdout=subprocess.PIPE)
@@ -108,6 +129,7 @@ def run_test(fname):
     with open(fname + '.out', 'w') as fd:
         fd.write(stdout)        
     return stdout
+
 
 def human_to_bytes(s):
     """convert string s in the form [0-9]+KB/s or similar into bytes (or bytes per seconds"""
@@ -133,7 +155,8 @@ def human_to_bytes(s):
     except Exception, ex:
         import pdb; pdb.set_trace()
 
-def parse_results(results):
+
+def parse_results(results, cfg):
     # This is the typical output of fio:
     #
     # file001: (g=0): rw=write, bs=4K-4K/4K-4K/4K-4K, ioengine=sync, iodepth=1
@@ -174,9 +197,9 @@ def parse_results(results):
     msg = []
     size = 0
     bs = 0
+    rw = None
 
-    for rw in ALL_TESTS:
-        data[rw] = {'aggr': {}, 'disks_iops': [], 'disks_bw': []}
+    data = {'aggr': {}, 'disks_iops': [], 'disks_bw': []}
 
     files_re = re.compile(
         r'.* rw=(?P<rw>[^,]*), bs=(?P<read>[0-9.]+[a-zA-Z]+)-[^/]*/'
@@ -194,12 +217,11 @@ def parse_results(results):
     for line in results.split('\n'):
         if disk_re.match(line):
             m = disk_re.match(line)
-            rw = m.group('rw')
             bw = human_to_bytes(m.group('bw'))
             iops = int(m.group('iops'))
 
-            data[rw]['disks_bw'].append(bw)
-            data[rw]['disks_iops'].append(iops)
+            data['disks_bw'].append(bw)
+            data['disks_iops'].append(iops)
 
             if not size:
                 # size = human_to_bytes(m.group('io'))
@@ -210,8 +232,7 @@ def parse_results(results):
             m = aggr_re.match(line)
             if not m:
                 continue
-            rw = m.group('RW').lower()
-            data[rw]['aggr'] = {
+            data['aggr'] = {
                 'bw': m.group('aggrb'),
                 'minb': m.group('minb'),
                 'maxb': m.group('maxb'),
@@ -221,40 +242,64 @@ def parse_results(results):
             # we assume all blocksizes are the same
             # bs = human_to_bytes(m.group('read'))
             bs = m.group('read')
+            rw = m.group('rw')
 
-    for rw in ALL_TESTS:
-        if not data[rw]['disks_iops'] or not data[rw]['disks_bw']:
-            continue
-        totiops = sum(data[rw]['disks_iops'])
-        avgiops = totiops / len(data[rw]['disks_iops'])
+    totiops = sum(data['disks_iops'])
+    numdisks = len(data['disks_iops'])
+    if not numdisks:
+        if cfg.verbose:
+            return "Unable to parse file\n"
+        else:
+            return ''
+    avgiops = totiops / numdisks
 
-        totbw = sum(data[rw]['disks_bw'])
-        avgbw = totbw / len(data[rw]['disks_bw'])
+    totbw = sum(data['disks_bw'])
+    numdisksbw = len(data['disks_bw'])
+    avgbw = totbw / numdisksbw
 
-        msg.append("%s: size=%s, bs=%s" % (rw, size, bs))
-        msg.append("%s: avg iops=%d, bw: %d bytes/s" % (rw, avgiops, avgbw))
-        msg.append("%s: min iops=%d, bw: %d bytes" % (rw,
-                                                      min(data[rw]['disks_iops']),
-                                                      min(data[rw]['disks_bw'])))
-        msg.append("%s: max iops=%d, bw: %d bytes" % (rw,
-                                                      max(data[rw]['disks_iops']),
-                                                      max(data[rw]['disks_bw'])))
+    if numdisks != numdisksbw and cfg.verbose:
+        print "WARNING: Device count mismatch: %d (iops) != %d (bw)" % (numdisks, numdisksbw)
+
+    if cfg.print_summary:
+        msg.append("%s: avg iops=%d, bw: %d B/s" % (rw, avgiops, avgbw))
+        msg.append("%s: min iops=%d, bw: %d B/s" % (rw,
+                                                      min(data['disks_iops']),
+                                                      min(data['disks_bw'])))
+        msg.append("%s: max iops=%d, bw: %d B/s" % (rw,
+                                                      max(data['disks_iops']),
+                                                      max(data['disks_bw'])))
+
+    sizeb = human_to_bytes(size)
+    bsb = human_to_bytes(bs)
+    for osd, tests in UZH_VALUES.items():
+        if rw in tests:
+            values = tests[rw]
+            compliant = True
+            if 'mindisks' in values and numdisks < values['mindisks']:
+                continue
+            if 'minsize' in values and sizeb < values['minsize']:
+                continue
+            if 'bs' in values and bsb < values['bs']:
+                continue
+
+            # Test is to be used to check compliance with RFP
+            if avgbw < values.get('minbw', 0):
+                msg.append("%s: NOT COMPLIANT: %d B/s < %d B/s" % (
+                    osd, avgbw, values.get('minbw', 0)))
+                compliant = False
+            if avgiops < values.get('miniops', 0):
+                msg.append("%s: NOT COMPLIANT: %d iops < %d iops" % (
+                    osd, avgiops, values.get('miniops', 0)))
+                compliant = False
+            if compliant:
+                msg.append("%s: COMPLIANT" % osd)
+
+    if msg:
+        msg.insert(0, "%s: size=%s, bs=%s" % (rw, size, bs))
         msg.append('')
-    # For each fileNN section,
-    #   get  write_bw|iops_log  option
-    #   append _bw.log or _iops.log
-    #   read the file
-    #   compute average/min/max/std
-    #   add the values to a list
-    # compute global average/min/max/std
-    # print these values
-    return str.join('\n', msg)
-        
-# _bw.log files:
-# msec, badwidth (KB/sec), read=0/write=1, bs (KB/sec)
-
-# _iops.log files:
-# msec, iops, read=0/write=1, bs (KB/sec)
+        return str.join('\n', msg)
+    else:
+        return ''
 
 
 if __name__ == "__main__":
@@ -274,8 +319,8 @@ if __name__ == "__main__":
 
     run_parser.add_argument('-t', help='tests to run',
                             nargs='*',
-                            default=['write', 'read', 'randwrite', 'randread'],
-                            choices=['write', 'read', 'randwrite', 'randread'],
+                            default=ALL_TESTS,
+                            choices=ALL_TESTS,
                             dest='tests')
 
     run_parser.add_argument('-i', help='Do not run with direct-IO',
@@ -286,6 +331,8 @@ if __name__ == "__main__":
                             default=True, action='store_false', dest='run_tests')
 
     print_parser = subparser.add_parser('print', help='Parse data from output files')
+    print_parser.add_argument('-s', dest='print_summary', action='store_true')
+    print_parser.add_argument('-v', dest='verbose', action='count')
     print_parser.add_argument('FILE', nargs='*', 
                               default=[fname for fname in os.listdir('.') if fname.endswith('.out')], 
                               help='output file names. Default: *.out')
@@ -304,6 +351,8 @@ if __name__ == "__main__":
                     print parse_results(results)
     elif cfg.cmd == 'print':
         for fname in cfg.FILE:
-            print "Reading file %s" % fname
+            if cfg.verbose:
+                print "Reading file %s" % fname
             with open(fname) as fd:
-                print(parse_results(fd.read()))
+                out = parse_results(fd.read(), cfg)
+                if out: print out
