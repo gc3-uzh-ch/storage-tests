@@ -595,3 +595,466 @@ termination::
     +--------------------------------------+-----------+------------------------------+------+-------------+----------+-------------+
     | fd0dffdc-4cd3-4432-b57d-d44bc590d124 | available | Ubuntu 14.04 x86_64 from rbd |  20  |     None    |   true   |             |
     +--------------------------------------+-----------+------------------------------+------+-------------+----------+-------------+
+
+Configure radosgw on a VM
+-------------------------
+
+Network configuration
++++++++++++++++++++++
+
+First of all, the VM must be able to contact the nodes.
+
+In order to do that, since we are using the same L2 network for both
+L3 network (10.8.0.0/24 and 192.168.160.0/22), we configure routing on
+the VM::
+
+    root@rados:~# route add -net 192.168.160.0/22 dev eth0
+    root@rados:~# route -n
+    Kernel IP routing table
+    Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+    0.0.0.0         10.8.0.1        0.0.0.0         UG    0      0        0 eth0
+    10.8.0.0        0.0.0.0         255.255.255.0   U     0      0        0 eth0
+    192.168.160.0   0.0.0.0         255.255.252.0   U     0      0        0 eth0
+
+and on the storage nodes (this after moving eth0 to eth4, 10gbe)::
+
+    antonio@kenny:~$ pdsh -w storage[5-8] -l root route add -net 10.8.0.0/24 dev eth4
+    antonio@kenny:~$ pdsh -w storage[5-8] -l root route -n | dshbak -c
+    ----------------
+    storage[5-8]
+    ----------------
+    Kernel IP routing table
+    Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+    0.0.0.0         192.168.160.1   0.0.0.0         UG    0      0        0 eth4
+    10.8.0.0        0.0.0.0         255.255.255.0   U     0      0        0 eth4
+    192.168.160.0   0.0.0.0         255.255.252.0   U     0      0        0 eth4
+
+and check that the VM can ping the storage nodes::
+
+    root@rados:~# ping -c 1 192.168.160.65
+    PING 192.168.160.65 (192.168.160.65) 56(84) bytes of data.
+    64 bytes from 192.168.160.65: icmp_seq=1 ttl=64 time=0.489 ms
+
+    --- 192.168.160.65 ping statistics ---
+    1 packets transmitted, 1 received, 0% packet loss, time 0ms
+    rtt min/avg/max/mdev = 0.489/0.489/0.489/0.000 ms
+
+
+Keys configuration
+++++++++++++++++++
+
+Also check: http://ceph.com/docs/master/radosgw/config/
+
+Create a keyring::
+
+    root@storage5:~# ceph-authtool --create-keyring /etc/ceph/ceph.client.radosgw.keyring
+    creating /etc/ceph/ceph.client.radosgw.keyring
+
+Create a new key::
+
+    root@storage5:~# ceph-authtool /etc/ceph/ceph.client.radosgw.keyring -n client.radosgw.gateway --gen-key
+
+Add capabilities to that key::
+
+    root@storage5:~# ceph-authtool -n client.radosgw.gateway --cap osd 'allow rwx' --cap mon 'allow rw' /etc/ceph/ceph.client.radosgw.keyring
+
+Add the key in the keyring to the ceph keyring::
+
+    root@storage5:~# ceph -k /etc/ceph/ceph.client.admin.keyring auth add client.radosgw.gateway -i /etc/ceph/ceph.client.radosgw.keyring
+    added key for client.radosgw.gateway
+
+On the vm, add the repository (you may need to disable ipv6 and
+configure masquerading on the compute node, if it's not done already)::
+
+    root@rados:~# apt-add-repository 'deb http://ceph.com/debian/ trusty main'
+    root@rados:~# apt-get update
+    [...]
+    root@rados:~# apt-get install ceph radosgw
+
+Copy the keyring in the VM::
+
+    root@storage5:/etc/ceph# scp ceph.client.radosgw.keyring 10.8.0.2:/etc/ceph/
+
+
+Also copy the ceph.conf file::
+
+    root@storage5:/etc/ceph# scp ceph.conf 10.8.0.2:/etc/ceph/
+    ceph.conf                    100%   14KB  14.1KB/s   00:00    
+
+
+In the ceph.conf file, let's try to remove everything but sections
+`[global]` and `[mon.*]` (`mon initial members` is useless here, and
+so also `[osd.*]`).
+
+Add a section for radosgw::
+
+    [client.radosgw.gateway]
+    host = 10.8.0.2
+    keyring = /etc/ceph/ceph.client.radosgw.keyring
+    rgw socket path = /var/run/ceph/ceph.radosgw.gateway.fastcgi.sock
+    log file = /var/log/ceph/client.radosgw.gateway.log
+
+
+You should be able to run::
+
+    root@rados:/etc/ceph# ceph -n client.radosgw.gateway -s 
+        cluster 7705608d-cbef-477a-865d-f5ae4c03370a
+         health HEALTH_OK
+         monmap e4: 4 mons at {storage5=192.168.160.65:6789/0,storage6=192.168.160.66:6789/0,storage7=192.168.160.67:6789/0,storage8=192.168.160.68:6789/0}, election epoch 46, quorum 0,1,2,3 storage5,storage6,storage7,storage8
+         osdmap e922: 92 osds: 92 up, 92 in
+          pgmap v351377: 24896 pgs, 6 pools, 78192 MB data, 18914 objects
+                160 GB used, 85406 GB / 85567 GB avail
+                   24896 active+clean
+
+and::
+
+    root@rados:/etc/ceph# rados -n client.radosgw.gateway lspools
+    data
+    metadata
+    rbd
+    cinder
+    glance
+    instances
+
+Install apache and its fcgi module (multiverse repo)::
+
+    root@rados:~# apt-get install apache2 libapache2-mod-fastcgi
+
+Enable rewrite and fastcgi modules::
+
+a2enmod rewrite fastcgi
+service apache2 restart
+
+
+keystone
+
+http://ceph.com/docs/master/radosgw/keystone/
+
+Erasure
+-------
+
+http://karan-mj.blogspot.ch/2014/04/erasure-coding-in-ceph.html
+
+Create a new ruleset::
+
+    root@storage5:~# ceph osd erasure-code-profile set ecruleset
+    root@storage5:~# ceph osd erasure-code-profile get ecruleset
+    directory=/usr/lib/ceph/erasure-code
+    k=2
+    m=1
+    plugin=jerasure
+    technique=reed_sol_van
+
+Set `k` and `m` values (`k`: number of chunks, `m`: chunks of
+parity). Also set failure domain to `osd` (optional)::
+
+    root@storage5:~# ceph osd erasure-code-profile set ecruleset k=5 m=2 --force
+    root@storage5:~# ceph osd erasure-code-profile set ecruleset ruleset-failure-domain=osd --force
+    root@storage5:~# ceph osd erasure-code-profile get ecruleset
+    directory=/usr/lib/ceph/erasure-code
+    k=2
+    m=1
+    plugin=jerasure
+    ruleset-failure-domain=osd
+    technique=reed_sol_van
+
+Create an `ecpool` pool using the `ecruleset` ruleset::
+
+    root@storage5:~# ceph osd pool create ecpool 128 128 erasure ecruleset
+    pool 'ecpool' created
+
+Check::
+
+    root@storage5:~# rados lspools
+    data
+    metadata
+    rbd
+    [...]
+    ecpool
+    root@storage5:~# ceph osd dump | grep -i erasure
+    pool 14 'ecpool' erasure size 3 min_size 1 crush_ruleset 2 object_hash rjenkins pg_num 128 pgp_num 128 last_change 970 owner 0 flags hashpspool stripe_width 4096
+
+
+Benchmarking
+------------
+
+Rados test: run for 60 seconds, use pool `rbd`, use 32 threads, object
+size of 4194304 bytes (4MB, which is the default btw)
+
+(sequential?) write::
+
+    root@storage5:~# rados -p rbd bench -b 4194304 60 write -t 32
+    [...]
+     Total time run:         60.518910
+    Total writes made:      5987
+    Write size:             4194304
+    Bandwidth (MB/sec):     395.711 
+
+    Stddev Bandwidth:       67.7728
+    Max bandwidth (MB/sec): 500
+    Min bandwidth (MB/sec): 0
+    Average Latency:        0.323123
+    Stddev Latency:         0.201529
+    Max latency:            1.65925
+    Min latency:            0.113003
+
+sequential read (must run a `write --no-cleanup` before)::
+
+    root@storage5:~# rados bench -p rbd 60  seq -t 32 --no-cleanup
+     Total time run:        30.924898
+    Total reads made:     5988
+    Read size:            4194304
+    Bandwidth (MB/sec):    774.522 
+
+    Average Latency:       0.16499
+    Max latency:           0.367119
+    Min latency:           0.051919
+
+and random read::
+
+    root@storage5:~# rados bench -p rbd 60  rand -t 32 --no-cleanup
+     Total time run:        60.108433
+    Total reads made:     11373
+    Read size:            4194304
+    Bandwidth (MB/sec):    756.832 
+
+    Average Latency:       0.168952
+    Max latency:           0.421654
+    Min latency:           0.024715
+
+(note, I couldn't find a better way to cleanup than running ``rados
+ls -p rbd | grep ^benchmark_data_storage5 | xargs rados rm -p rbd``)
+
+Write, but with 16MB objects::
+
+    root@storage5:~# rados -p rbd bench -b $[1024*1024*16] 60 write -t 32
+     Total time run:         60.324225
+    Total writes made:      860
+    Write size:             16777216
+    Bandwidth (MB/sec):     228.101 
+
+    Stddev Bandwidth:       57.1235
+    Max bandwidth (MB/sec): 384
+    Min bandwidth (MB/sec): 0
+    Average Latency:        2.20626
+    Stddev Latency:         0.263532
+    Max latency:            2.99246
+    Min latency:            0.347751
+
+Interesting: bigger chunks do not lead to better bandwidth.
+
+4kB objects::
+
+    root@storage5:~# rados -p rbd bench -b $[1024*4] 60 write -t 32
+     Total time run:         60.136300
+    Total writes made:      60242
+    Write size:             4096
+    Bandwidth (MB/sec):     3.913 
+
+    Stddev Bandwidth:       0.951053
+    Max bandwidth (MB/sec): 5.88672
+    Min bandwidth (MB/sec): 0
+    Average Latency:        0.0319333
+    Stddev Latency:         0.0456733
+    Max latency:            0.718472
+    Min latency:            0.005983
+
+Bandwidth is clearly low, because the object size is very low. Average
+latency is interesting (0.03)
+
+
+Let's also benchmark the erasure encoded pool::
+
+    root@storage5:~# rados bench -p ecpool 60  write -t 32
+     Total time run:         60.651051
+    Total writes made:      5363
+    Write size:             4194304
+    Bandwidth (MB/sec):     353.695 
+
+    Stddev Bandwidth:       70.0677
+    Max bandwidth (MB/sec): 468
+    Min bandwidth (MB/sec): 0
+    Average Latency:        0.360607
+    Stddev Latency:         0.294105
+    Max latency:            3.67487
+    Min latency:            0.119527
+
+Not bad at all.
+
+
+However, rados bench can generate a lot of work, and being the
+bottleneck. Let's try running 4 instances, one for each node::
+
+    antonio@kenny:~$ pdsh -l root -g cephtest 'rados bench -p rbd 60 write -t 32 | grep andwidth' |dshbak -c
+    ----------------
+    storage5
+    ----------------
+    Bandwidth (MB/sec):     146.071 
+    Stddev Bandwidth:       45.8362
+    Max bandwidth (MB/sec): 220
+    Min bandwidth (MB/sec): 0
+    ----------------
+    storage6
+    ----------------
+    Bandwidth (MB/sec):     136.288 
+    Stddev Bandwidth:       44.5226
+    Max bandwidth (MB/sec): 216
+    Min bandwidth (MB/sec): 0
+    ----------------
+    storage7
+    ----------------
+    Bandwidth (MB/sec):     136.554 
+    Stddev Bandwidth:       43.3056
+    Max bandwidth (MB/sec): 212
+    Min bandwidth (MB/sec): 0
+    ----------------
+    storage8
+    ----------------
+    Bandwidth (MB/sec):     144.096 
+    Stddev Bandwidth:       49.6484
+    Max bandwidth (MB/sec): 244
+    Min bandwidth (MB/sec): 0
+
+
+Summing up all the values, we get a bandwidth of 562 MB/s!
+
+I don't think we can have a value bigger than this, as the 10gbe is
+probably the bottleneck here: the rbd volume has `size=2` (one object
+and one replica) so for each write, the osd must write another replica
+to another object.
+
+For the erasure coded pool we have instead::
+
+    antonio@kenny:~$ pdsh -l root -g cephtest 'rados bench -p ecpool 60 write -t 32 | grep andwidth' |dshbak -c
+    storage5
+    ----------------
+    Bandwidth (MB/sec):     157.683 
+    Stddev Bandwidth:       32.8958
+    Max bandwidth (MB/sec): 220
+    Min bandwidth (MB/sec): 0
+    ----------------
+    storage6
+    ----------------
+    Bandwidth (MB/sec):     159.924 
+    Stddev Bandwidth:       32.1713
+    Max bandwidth (MB/sec): 208
+    Min bandwidth (MB/sec): 0
+    ----------------
+    storage7
+    ----------------
+    Bandwidth (MB/sec):     158.980 
+    Stddev Bandwidth:       28.425
+    Max bandwidth (MB/sec): 208
+    Min bandwidth (MB/sec): 0
+    ----------------
+    storage8
+    ----------------
+    Bandwidth (MB/sec):     164.479 
+    Stddev Bandwidth:       33.3917
+    Max bandwidth (MB/sec): 220
+    Min bandwidth (MB/sec): 0
+
+638MB/s!! (it should be slower IMHO)
+
+Benchmark the osd::
+
+    root@storage5:~# ceph tell osd.0 bench $[1024*1024*1024] 4096
+    Error EINVAL: 'count' values greater than 12288000 for a block size of
+    4096 bytes, assuming 100 IOPS, for 30 seconds, can cause ill effects
+    on osd.  Please adjust 'osd_bench_small_size_max_iops' with a higher
+    value if you wish to use a higher 'count'.
+
+Uhmm... where is it this configuration?::
+
+    root@storage5:~# ceph --admin-daemon /var/run/ceph/ceph-osd.0.asok config show|grep osd_bench
+      "osd_bench_small_size_max_iops": "100",
+      "osd_bench_large_size_max_throughput": "104857600",
+      "osd_bench_max_block_size": "67108864",
+      "osd_bench_duration": "30",
+
+Can we inject new configuration? Yes (`osd.*` can be used for *all*
+the OSDs)::
+
+    root@storage5:~# ceph tell osd.0 injectargs '--osd_bench_small_size_max_iops 10000'
+    osd_bench_small_size_max_iops = '10000' 
+
+Now we can do the benchmark again: writing 1GB in 4MB chunks to
+`osd.0`::
+
+    root@storage5:~# ceph tell osd.0 bench $[1024*1024*1024] 4096
+
+=> osd down :(
+
+Trying with 100MB::
+
+    root@storage5:~# ceph tell osd.0 bench $[1024*1024*100] 4096
+    { "bytes_written": 104857600,
+      "blocksize": 4096,
+      "bytes_per_sec": "2115816.000000"}
+
+2MB/s ... veeery slow... (although it's 4kB chunks...)
+
+increasing the blocksize causes the error::
+
+    Error EINVAL: 'count' values greater than 750 for a block size of
+    4096 kB, assuming 102400 kB/s, for 30 seconds, can cause ill
+    effects on osd.  Please adjust
+    'osd_bench_large_size_max_throughput' with a higher value if you
+    wish to use a higher 'count'.
+
+which I don't know how to fix :(
+
+Increasing a few more values::
+
+    root@storage5:~# ceph --admin-daemon /var/run/ceph/ceph-osd.0.asok config show|grep osd_bench
+      "osd_bench_small_size_max_iops": "10000",
+      "osd_bench_large_size_max_throughput": "10485760000000",
+      "osd_bench_max_block_size": "67108864",
+      "osd_bench_duration": "3000",
+    
+    root@storage6:~# ceph tell osd.0 bench $[1024*1024*1024] $[1024*1024*4]
+    { "bytes_written": 1073741824,
+      "blocksize": 4194304,
+      "bytes_per_sec": "42741605.000000"}
+
+~40MB/s per OSD, not that much.
+
+Same test, using dd on the device::
+
+    root@storage5:~# dd if=/dev/zero of=/dev/sdz bs=4M count=$[1024/4] oflag=direct
+    256+0 records in
+    256+0 records out
+    1073741824 bytes (1.1 GB) copied, 7.91085 s, 136 MB/s
+
+and on the filesystem::
+
+    root@storage5:~# dd if=/dev/zero of=/var/lib/ceph/osd/ceph-0/deleteme bs=4M count=$[1024/4] oflag=direct
+    256+0 records in
+    256+0 records out
+    1073741824 bytes (1.1 GB) copied, 9.55396 s, 112 MB/s
+
+
+
+Misc notes
+----------
+
+Add an OSD
+
+I use my own scripted method based on the documentation:
+http://ceph.com/docs/master/rados/operations/add-or-rm-osds/
+
+Just remember to run "ceph osd create" _without_ a UUID, then get the OSD number from the output. Here's a quick and dirty version:
+
+OSD=`ceph osd create`
+[update ceph.conf if necessary]
+mkdir -p /var/lib/ceph/osd/ceph-${OSD}
+mkfs_opts=`ceph-conf -c /etc/ceph/ceph.conf -s osd --lookup osd_mkfs_options_xfs`
+mount_opts=`ceph-conf -c /etc/ceph/ceph.conf -s osd --lookup osd_mount_options_xfs`
+dev=`ceph-conf -c /etc/ceph/ceph.conf -s osd.${OSD} --lookup devs`
+mkfs.xfs ${mkfs_opts} ${dev}
+mount -t xfs -o ${mount_opts} ${dev} /var/lib/ceph/osd/ceph-${OSD}
+ceph-osd -c /etc/ceph/ceph.conf -i ${OSD} --mkfs --mkkey
+ceph auth del osd.${OSD} # only if a prior OSD had this number
+ceph auth add osd.${OSD} osd 'allow *' mon 'allow rwx' -i /var/lib/ceph/osd/ceph-${o}/keyring
+
+Then set up your CRUSH map and start the OSDs.
