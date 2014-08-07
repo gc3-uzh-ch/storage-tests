@@ -80,3 +80,6 @@ Links
 -----
 
 http://ceph.com/docs/master/rados/troubleshooting/troubleshooting-osd/
+
+Very interesting wiki with a lot of small HOWTO:
+http://wiki.skytech.dk/index.php/Ceph_-_howto,_rbd,_lvm,_cluster
