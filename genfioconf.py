@@ -252,9 +252,9 @@ def parse_results(results, cfg):
             if not m:
                 continue
             data['aggr'] = {
-                'bw': m.group('aggrb'),
-                'minb': m.group('minb'),
-                'maxb': m.group('maxb'),
+                'bw': human_to_bytes(m.group('aggrb')),
+                'minb': human_to_bytes(m.group('minb')),
+                'maxb': human_to_bytes(m.group('maxb')),
                 }                        
         elif files_re.match(line) and not bs:
             m = files_re.match(line)
@@ -312,11 +312,13 @@ def parse_results(results, cfg):
                     osd, bytes_to_human(data['aggr']['bw']),
                     bytes_to_human(values.get('minbw', 0))))
                 compliant = False
+                UZH_EXPECTED_PERF[osd][rw]['notcompliant'] = True
             if avgiops < values.get('miniops', 0):
                 msg.append("%s: NOT COMPLIANT: %d iops < %d iops" % (
                     osd, avgiops, values.get('miniops', 0)))
                 compliant = False
-            if compliant:
+                UZH_EXPECTED_PERF[osd][rw]['notcompliant'] = True
+            if cfg.verbose and compliant:
                 msg.append("%s: COMPLIANT" % osd)
 
     if msg:
@@ -391,7 +393,17 @@ if __name__ == "__main__":
                 out = parse_results(fd.read(), cfg)
                 if out: print(out)
 
+    print("Compliance summary")
+    print("------------------")
     for osd, tests in UZH_EXPECTED_PERF.items():
+        global_compliant = True
         for rw in tests:
             if 'numrun' not in tests[rw]:
                 print("%s: NOT COMPLIANT: test `%s` not performed." % (osd, rw))
+                global_compliant = False
+            elif tests[rw].get('notcompliant', False):
+                print("%s: NOT COMPLIANT: test `%s` not passed." % (osd, rw))
+                global_compliant = False
+
+        if global_compliant:
+            print("%s: COMPLIANT" % osd)
