@@ -69,7 +69,7 @@ UZH_EXPECTED_PERF = {
         'randwrite': {
             'minsize': 1*2**30,
             'mindisks': 16,
-            'minbw': 1 * 2**30,
+            'minbw': 2 * 2**30,
             'bs': 4*2**10,
         },
     },
@@ -333,39 +333,49 @@ if __name__ == "__main__":
         
     parser = argparse.ArgumentParser(description='Script to run FIO and parse outputs')
     subparser = parser.add_subparsers(dest='cmd')
-    run_parser = subparser.add_parser('run', help='Run FIO')
-    run_parser.add_argument('-b', help='blocksize',
-                            nargs='*',
-                            default=DEFAULT_BLOCKSIZES,
+    run_parser = subparser.add_parser('run', help='Create configuration files '
+                                      'FIO, execute the tests and print the results.')
+
+    run_parser.add_argument('-d', help='Devices (or files) to test. This is mandatory.',
+                            nargs='+', required=True, dest='devices')
+
+    run_parser.add_argument('-b', nargs='*', default=DEFAULT_BLOCKSIZES,
+                            help='Blocksize(s) to be used. If you specify '
+                            'multiple values (like "-b 1k 4k 1m"), one '
+                            'test per blocksize will be run.'
+                            'Default: %(default)s',
                             dest='bs')
 
-    run_parser.add_argument('-s', help='size',
-                            nargs='*',
-                            default=DEFAULT_SIZES,
+    run_parser.add_argument('-s', nargs='*', default=DEFAULT_SIZES,
+                            help='Amount of data written (or read) during the '
+                            'test *per thread*, in human-readable format '
+                            '(eg. 1g, 2t). If you specify multiple values '
+                            '(like "-s 1g 2g 8g"), one test per filesize will be run.'
+                            ' Default: %(default)s',
                             dest='size')
 
-    run_parser.add_argument('-t', help='tests to run',
+    run_parser.add_argument('-t', help='Tests to run. You can specify multiple '
+                            'tests, like "-t read write".'
+                            'Default: %(default)s',
                             nargs='*',
                             default=ALL_TESTS,
                             choices=ALL_TESTS,
                             dest='tests')
 
-    run_parser.add_argument('--numjobs', help="Threads per file",
+    run_parser.add_argument('--numjobs', help="Threads per device/file. Default: %(default)s",
                             type=int, default=DEFAULT_THREADS)
 
-    run_parser.add_argument('-i', help='Do not run with direct-IO',
+    run_parser.add_argument('-i', help='Do not run with direct-IO. Default: %(default)s',
                             default=True, action='store_false', dest='direct')
-    run_parser.add_argument('-d', help='Devices to test',
-                            nargs='+', dest='devices')
 
     run_parser.add_argument('-n', help='Do not run tests, just create configuration files',
                             default=True, action='store_false', dest='run_tests')
 
-    run_parser.add_argument('-l', help='also generate statistic files',
+    run_parser.add_argument('-l', help='also generate statistic files. Default: %(default)s',
                             default=False, action='store_true', dest='stats')
     run_parser.add_argument('-v', dest='verbose', action='count')
 
-    print_parser = subparser.add_parser('print', help='Parse data from output files')
+    print_parser = subparser.add_parser('print', help='Parse data from output files.')
     print_parser.add_argument('-v', dest='verbose', action='count')
     print_parser.add_argument('FILE', nargs='*', 
                               default=[fname for fname in os.listdir('.') if fname.endswith('.out')], 
